@@ -42,6 +42,10 @@ type modelResponse struct {
 		Total      uint64            `json:"total"`
 	} `json:"safetensors"`
 
+	CardData struct {
+		BaseModel any `json:"base_model"`
+	} `json:"cardData"`
+
 	Siblings []struct {
 		Filename string `json:"rfilename"`
 	} `json:"siblings"`
@@ -71,47 +75,136 @@ func (c *Client) GetModel(
 
 	modelID = normalizeModelID(modelID)
 
-	metadata, err := c.getMetadata(ctx, modelID)
+	metadata, err :=
+		c.getMetadata(
+			ctx,
+			modelID,
+		)
 	if err != nil {
 		return nil, err
 	}
 
-	config, err := c.getConfig(ctx, modelID)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"load model config: %w",
-			err,
+	baseModelID :=
+		resolveBaseModelID(
+			modelID,
+			metadata,
 		)
+
+	configModelID := modelID
+
+	config, err :=
+		c.getConfig(
+			ctx,
+			configModelID,
+		)
+
+	/*
+		Un repo GGUF puede no incluir config.json.
+
+		En ese caso usamos el modelo base.
+	*/
+	if err != nil {
+
+		if baseModelID == "" {
+
+			return nil, fmt.Errorf(
+				"model %s has no config.json and no base model could be resolved: %w",
+				modelID,
+				err,
+			)
+		}
+
+		configModelID =
+			baseModelID
+
+		config, err =
+			c.getConfig(
+				ctx,
+				configModelID,
+			)
+
+		if err != nil {
+
+			return nil, fmt.Errorf(
+				"load config from base model %s: %w",
+				baseModelID,
+				err,
+			)
+		}
 	}
 
-	model := &domain.Model{
-		ID:          metadata.ID,
-		Library:     metadata.LibraryName,
-		PipelineTag: metadata.PipelineTag,
-		Parameters:  metadata.Safetensors.Total,
+	parameters :=
+		metadata.Safetensors.Total
 
-		ModelType: config.ModelType,
+	/*
+		Los repos GGUF normalmente no tendrán
+		safetensors.total.
 
-		HiddenSize:            config.HiddenSize,
-		HiddenLayers:          config.NumHiddenLayers,
-		AttentionHeads:        config.NumAttentionHeads,
-		KeyValueHeads:         config.NumKeyValueHeads,
-		MaxPositionEmbeddings: config.MaxPositionEmbeddings,
-		HeadDim:               config.HeadDim,
+		Recuperamos los parámetros desde el
+		modelo base.
+	*/
+	if parameters == 0 &&
+		baseModelID != "" {
+
+		baseMetadata, err :=
+			c.getMetadata(
+				ctx,
+				baseModelID,
+			)
+
+		if err == nil {
+
+			parameters =
+				baseMetadata.Safetensors.Total
+		}
 	}
+
+	model :=
+		&domain.Model{
+			ID: modelID,
+
+			BaseModelID: baseModelID,
+
+			Library: metadata.LibraryName,
+
+			PipelineTag: metadata.PipelineTag,
+
+			Parameters: parameters,
+
+			ModelType: config.ModelType,
+
+			HiddenSize: config.HiddenSize,
+
+			HiddenLayers: config.NumHiddenLayers,
+
+			AttentionHeads: config.NumAttentionHeads,
+
+			KeyValueHeads: config.NumKeyValueHeads,
+
+			MaxPositionEmbeddings: config.MaxPositionEmbeddings,
+
+			HeadDim: config.HeadDim,
+		}
 
 	for _, sibling := range metadata.Siblings {
-		model.Files = append(
-			model.Files,
-			sibling.Filename,
-		)
+
+		model.Files =
+			append(
+				model.Files,
+				sibling.Filename,
+			)
 	}
 
 	if len(config.Architectures) > 0 {
-		model.Architecture = config.Architectures[0]
+
+		model.Architecture =
+			config.Architectures[0]
 	}
 
-	applyFallbacks(model, config)
+	applyFallbacks(
+		model,
+		config,
+	)
 
 	return model, nil
 }
@@ -249,4 +342,74 @@ func applyFallbacks(
 		model.HeadDim =
 			model.HiddenSize / model.AttentionHeads
 	}
+}
+
+func inferBaseModelID(
+	modelID string,
+) string {
+
+	suffixes := []string{
+		"-GGUF",
+		"_GGUF",
+		"-gguf",
+		"_gguf",
+	}
+
+	for _, suffix := range suffixes {
+
+		if before, ok := strings.CutSuffix(
+			modelID,
+			suffix,
+		); ok {
+
+			return before
+		}
+	}
+
+	return modelID
+}
+
+func extractBaseModelID(
+	value any,
+) string {
+
+	switch v := value.(type) {
+
+	case string:
+		return strings.TrimSpace(v)
+
+	case []any:
+		if len(v) == 0 {
+			return ""
+		}
+
+		if first, ok := v[0].(string); ok {
+			return strings.TrimSpace(first)
+		}
+	}
+
+	return ""
+}
+
+func resolveBaseModelID(
+	modelID string,
+	metadata *modelResponse,
+) string {
+
+	// 1. Metadata oficial de Hugging Face.
+	if base := extractBaseModelID(
+		metadata.CardData.BaseModel,
+	); base != "" {
+
+		return base
+	}
+
+	// 2. Heurística para repos oficiales GGUF.
+	if base := inferBaseModelID(modelID); base != modelID {
+
+		return base
+	}
+
+	// 3. No sabemos cuál es.
+	return ""
 }
