@@ -1,8 +1,9 @@
 package domain
 
 type Model struct {
-	ID          string
-	BaseModelID string
+	ID              string
+	BaseModelID     string
+	BaseModelSource BaseModelSource
 
 	Library      string
 	PipelineTag  string
@@ -21,6 +22,13 @@ type Model struct {
 }
 
 type Precision string
+type BaseModelSource string
+
+const (
+	BaseModelSourceNone      BaseModelSource = ""
+	BaseModelSourceMetadata  BaseModelSource = "metadata"
+	BaseModelSourceHeuristic BaseModelSource = "heuristic"
+)
 
 const (
 	PrecisionFP32 Precision = "FP32"
