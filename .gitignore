@@ -34,3 +34,6 @@ go.work.sum
 .env
 bin/hffit
 PROXYAI.md
+graphify-out
+skills-lock.json
+.agents
