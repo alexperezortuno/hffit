@@ -1,17 +1,26 @@
 package compatibility
 
 import (
-	"fmt"
-
 	"github.com/alexperezortuno/hffit/internal/domain"
 )
 
-const runtimeOverhead = 1.20
+const runtimeOverheadRatio = 0.10
 
-type Calculator struct{}
+type Options struct {
+	ContextSize int
+}
 
-func NewCalculator() *Calculator {
-	return &Calculator{}
+type Calculator struct {
+	options Options
+}
+
+func NewCalculator(
+	options Options,
+) *Calculator {
+
+	return &Calculator{
+		options: options,
+	}
 }
 
 func (c *Calculator) Calculate(
@@ -19,15 +28,7 @@ func (c *Calculator) Calculate(
 	hardware *domain.Hardware,
 ) []domain.CompatibilityResult {
 
-	var gpuVRAM uint64
-
-	for _, gpu := range hardware.GPUs {
-		// MVP:
-		// tomamos la GPU con mayor VRAM.
-		if gpu.VRAMBytes > gpuVRAM {
-			gpuVRAM = gpu.VRAMBytes
-		}
-	}
+	gpuVRAM := largestGPUVRAM(hardware)
 
 	precisions := []domain.Precision{
 		domain.PrecisionFP32,
@@ -43,107 +44,170 @@ func (c *Calculator) Calculate(
 	)
 
 	for _, precision := range precisions {
-		required := estimateVRAM(
+
+		weights := estimateWeights(
 			model.Parameters,
 			precision,
 		)
 
+		kvCache := estimateKVCache(
+			model,
+			c.options.ContextSize,
+			kvBytesPerElement(precision),
+		)
+
+		overhead := estimateRuntimeOverhead(
+			weights,
+		)
+
+		required :=
+			weights +
+				kvCache +
+				overhead
+
 		result := evaluate(
 			precision,
+			weights,
+			kvCache,
+			overhead,
 			required,
 			gpuVRAM,
 			hardware.Memory.TotalBytes,
+			c.options.ContextSize,
 		)
 
-		results = append(results, result)
+		results = append(
+			results,
+			result,
+		)
 	}
 
 	return results
 }
 
-func estimateVRAM(
+func largestGPUVRAM(
+	hardware *domain.Hardware,
+) uint64 {
+
+	var largest uint64
+
+	for _, gpu := range hardware.GPUs {
+		if gpu.VRAMBytes > largest {
+			largest = gpu.VRAMBytes
+		}
+	}
+
+	return largest
+}
+
+func estimateWeights(
 	parameters uint64,
 	precision domain.Precision,
 ) uint64 {
 
-	var bytesPerParameter float64
+	bytes :=
+		float64(parameters) *
+			weightBytesPerParameter(precision)
 
-	switch precision {
-	case domain.PrecisionFP32:
-		bytesPerParameter = 4
+	return uint64(bytes)
+}
 
-	case domain.PrecisionFP16:
-		bytesPerParameter = 2
+func estimateRuntimeOverhead(
+	weights uint64,
+) uint64 {
 
-	case domain.PrecisionINT8:
-		bytesPerParameter = 1
-
-	case domain.PrecisionINT4:
-		bytesPerParameter = 0.5
-
-	default:
-		bytesPerParameter = 4
-	}
-
-	weights := float64(parameters) * bytesPerParameter
-
-	return uint64(weights * runtimeOverhead)
+	return uint64(
+		float64(weights) *
+			runtimeOverheadRatio,
+	)
 }
 
 func evaluate(
 	precision domain.Precision,
+	weights uint64,
+	kvCache uint64,
+	overhead uint64,
 	required uint64,
 	vram uint64,
 	ram uint64,
+	contextSize int,
 ) domain.CompatibilityResult {
 
 	result := domain.CompatibilityResult{
-		Precision:     precision,
+		Precision: precision,
+
+		WeightsBytes:  weights,
+		KVCacheBytes:  kvCache,
+		OverheadBytes: overhead,
 		RequiredVRAM:  required,
+
 		AvailableVRAM: vram,
 		AvailableRAM:  ram,
+
+		ContextSize: contextSize,
 	}
 
 	if vram == 0 {
 		return evaluateWithoutGPU(result)
 	}
 
-	ratio := float64(required) / float64(vram)
+	ratio :=
+		float64(required) /
+			float64(vram)
 
 	switch {
+
 	case ratio <= 0.70:
+
 		result.Score = 100
 		result.Level = domain.LevelExcellent
 		result.CanFitVRAM = true
-		result.Message = "Excellent fit with plenty of VRAM headroom"
+
+		result.Message =
+			"Excellent fit with VRAM headroom"
 
 	case ratio <= 0.85:
+
 		result.Score = 90
 		result.Level = domain.LevelExcellent
 		result.CanFitVRAM = true
-		result.Message = "Excellent fit"
+
+		result.Message =
+			"Excellent fit"
 
 	case ratio <= 1.0:
+
 		result.Score = 80
 		result.Level = domain.LevelGood
 		result.CanFitVRAM = true
-		result.Message = "Fits in GPU VRAM"
+
+		result.Message =
+			"Fits in GPU VRAM"
 
 	case required <= vram+ram:
+
 		result.Score = 55
 		result.Level = domain.LevelLimited
 		result.CanFitWithOffload = true
-		result.Message = "Requires RAM/CPU offloading"
+
+		result.Message =
+			"Requires CPU/RAM offloading"
 
 	case required <= ram:
+
 		result.Score = 40
 		result.Level = domain.LevelPoor
-		result.Message = "CPU inference may be possible"
+
+		result.Message =
+			"CPU inference may be possible"
 
 	default:
-		result.Score = 10
+
+		result.Score = 0
 		result.Level = domain.LevelImpossible
-		result.Message = "Insufficient system memory"
+
+		result.Message =
+			"Insufficient system memory"
 	}
 
 	return result
@@ -154,18 +218,23 @@ func evaluateWithoutGPU(
 ) domain.CompatibilityResult {
 
 	if result.RequiredVRAM <= result.AvailableRAM {
+
 		result.Score = 35
 		result.Level = domain.LevelPoor
-		result.Message = "No supported GPU detected; CPU inference may be possible"
+
+		result.Message =
+			"No supported GPU detected; CPU inference may be possible"
 
 		return result
 	}
 
 	result.Score = 0
-	result.Level = domain.LevelImpossible
-	result.Message = fmt.Sprintf(
-		"requires more memory than available",
-	)
+
+	result.Level =
+		domain.LevelImpossible
+
+	result.Message =
+		"Insufficient system RAM"
 
 	return result
 }
