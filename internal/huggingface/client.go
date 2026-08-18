@@ -41,6 +41,10 @@ type modelResponse struct {
 		Parameters map[string]uint64 `json:"parameters"`
 		Total      uint64            `json:"total"`
 	} `json:"safetensors"`
+
+	Siblings []struct {
+		Filename string `json:"rfilename"`
+	} `json:"siblings"`
 }
 
 type configResponse struct {
@@ -94,6 +98,13 @@ func (c *Client) GetModel(
 		KeyValueHeads:         config.NumKeyValueHeads,
 		MaxPositionEmbeddings: config.MaxPositionEmbeddings,
 		HeadDim:               config.HeadDim,
+	}
+
+	for _, sibling := range metadata.Siblings {
+		model.Files = append(
+			model.Files,
+			sibling.Filename,
+		)
 	}
 
 	if len(config.Architectures) > 0 {
