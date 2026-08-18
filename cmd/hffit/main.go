@@ -12,7 +12,7 @@ import (
 	"github.com/alexperezortuno/hffit/internal/huggingface"
 )
 
-const version = "0.3.1"
+const version = "0.3.2"
 
 func main() {
 
@@ -267,6 +267,19 @@ func printModel(
 		"ID          %s\n",
 		model.ID,
 	)
+
+	fmt.Printf(
+		"ID          %s\n",
+		model.ID,
+	)
+
+	if model.BaseModelID != "" {
+
+		fmt.Printf(
+			"Base model  %s\n",
+			model.BaseModelID,
+		)
+	}
 
 	fmt.Printf(
 		"Type        %s\n",
