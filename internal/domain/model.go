@@ -14,6 +14,8 @@ type Model struct {
 	KeyValueHeads         int
 	MaxPositionEmbeddings int
 	HeadDim               int
+
+	Files []string
 }
 
 type Precision string
