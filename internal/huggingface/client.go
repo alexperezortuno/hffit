@@ -76,19 +76,57 @@ func (c *Client) GetModel(
 		return nil, err
 	}
 
-	config, err := c.getConfig(ctx, modelID)
+	configModelID := modelID
+
+	config, err := c.getConfig(ctx, configModelID)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"load model config: %w",
-			err,
+
+		baseModelID := inferBaseModelID(modelID)
+
+		if baseModelID == modelID {
+			return nil, fmt.Errorf(
+				"load model config: %w",
+				err,
+			)
+		}
+
+		config, err = c.getConfig(
+			ctx,
+			baseModelID,
 		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"load model config from base model %s: %w",
+				baseModelID,
+				err,
+			)
+		}
+
+		configModelID = baseModelID
+	}
+
+	parameters := metadata.Safetensors.Total
+
+	// Los repos GGUF normalmente no tienen metadata Safetensors.
+	if parameters == 0 && configModelID != modelID {
+
+		baseMetadata, err :=
+			c.getMetadata(
+				ctx,
+				configModelID,
+			)
+
+		if err == nil {
+			parameters =
+				baseMetadata.Safetensors.Total
+		}
 	}
 
 	model := &domain.Model{
 		ID:          metadata.ID,
 		Library:     metadata.LibraryName,
 		PipelineTag: metadata.PipelineTag,
-		Parameters:  metadata.Safetensors.Total,
+		Parameters:  parameters,
 
 		ModelType: config.ModelType,
 
@@ -108,10 +146,14 @@ func (c *Client) GetModel(
 	}
 
 	if len(config.Architectures) > 0 {
-		model.Architecture = config.Architectures[0]
+		model.Architecture =
+			config.Architectures[0]
 	}
 
-	applyFallbacks(model, config)
+	applyFallbacks(
+		model,
+		config,
+	)
 
 	return model, nil
 }
@@ -249,4 +291,26 @@ func applyFallbacks(
 		model.HeadDim =
 			model.HiddenSize / model.AttentionHeads
 	}
+}
+
+func inferBaseModelID(modelID string) string {
+
+	suffixes := []string{
+		"-GGUF",
+		"_GGUF",
+		"-gguf",
+		"_gguf",
+	}
+
+	for _, suffix := range suffixes {
+
+		if before, ok := strings.CutSuffix(
+			modelID,
+			suffix,
+		); ok {
+			return before
+		}
+	}
+
+	return modelID
 }
