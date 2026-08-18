@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 
@@ -11,22 +12,68 @@ import (
 	"github.com/alexperezortuno/hffit/internal/huggingface"
 )
 
-const version = "0.1.0"
+const version = "0.2.0"
 
 func main() {
+
 	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(1)
 	}
 
+	switch os.Args[1] {
+
+	case "--version", "-v":
+		fmt.Printf(
+			"hffit %s\n",
+			version,
+		)
+		return
+
+	case "--help", "-h":
+		printUsage()
+		return
+	}
+
 	modelID := os.Args[1]
 
-	fmt.Printf("HF Fit %s\n\n", version)
+	flags := flag.NewFlagSet(
+		"hffit",
+		flag.ExitOnError,
+	)
 
-	detector := hardware.NewDetector()
+	contextSize := flags.Int(
+		"context",
+		8192,
+		"context window in tokens",
+	)
 
-	hw, err := detector.Detect()
+	_ = flags.Parse(
+		os.Args[2:],
+	)
+
+	if *contextSize <= 0 {
+		fmt.Fprintln(
+			os.Stderr,
+			"context must be greater than zero",
+		)
+
+		os.Exit(1)
+	}
+
+	fmt.Printf(
+		"HF Fit %s\n\n",
+		version,
+	)
+
+	detector :=
+		hardware.NewDetector()
+
+	hw, err :=
+		detector.Detect()
+
 	if err != nil {
+
 		fmt.Fprintf(
 			os.Stderr,
 			"hardware detection failed: %v\n",
@@ -36,16 +83,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	printHardware(hw)
+	client :=
+		huggingface.NewClient()
 
-	client := huggingface.NewClient()
-
-	model, err := client.GetModel(
-		context.Background(),
-		modelID,
-	)
+	model, err :=
+		client.GetModel(
+			context.Background(),
+			modelID,
+		)
 
 	if err != nil {
+
 		fmt.Fprintf(
 			os.Stderr,
 			"model lookup failed: %v\n",
@@ -56,78 +104,150 @@ func main() {
 	}
 
 	if model.Parameters == 0 {
-		fmt.Fprintf(
+
+		fmt.Fprintln(
 			os.Stderr,
-			"model does not expose parameter metadata\n",
+			"model does not expose parameter metadata",
 		)
 
 		os.Exit(1)
 	}
 
-	printModel(model)
+	if model.MaxPositionEmbeddings > 0 &&
+		*contextSize > model.MaxPositionEmbeddings {
 
-	calculator := compatibility.NewCalculator()
+		fmt.Fprintf(
+			os.Stderr,
+			"warning: requested context %d exceeds model configured context %d\n\n",
+			*contextSize,
+			model.MaxPositionEmbeddings,
+		)
+	}
 
-	results := calculator.Calculate(
+	printHardware(hw)
+
+	printModel(
 		model,
-		hw,
+		*contextSize,
 	)
 
+	calculator :=
+		compatibility.NewCalculator(
+			compatibility.Options{
+				ContextSize: *contextSize,
+			},
+		)
+
+	results :=
+		calculator.Calculate(
+			model,
+			hw,
+		)
+
 	printCompatibility(results)
+
+	ggufVariants :=
+		compatibility.DiscoverGGUF(model)
+
+	if len(ggufVariants) > 0 {
+
+		ggufCalculator :=
+			compatibility.NewGGUFCalculator(
+				*contextSize,
+			)
+
+		ggufResults :=
+			ggufCalculator.Calculate(
+				model,
+				hw,
+				ggufVariants,
+			)
+
+		printGGUFCompatibility(
+			model,
+			ggufResults,
+			*contextSize,
+		)
+	}
 }
 
 func printUsage() {
-	fmt.Println("Usage:")
-	fmt.Println()
-	fmt.Println("  hffit <huggingface-model>")
-	fmt.Println()
-	fmt.Println("Example:")
-	fmt.Println()
-	fmt.Println("  hffit Qwen/Qwen3-8B")
+
+	fmt.Println(`
+HF Fit - Hugging Face model compatibility checker
+
+Usage:
+
+  hffit <model> [options]
+
+Examples:
+
+  hffit Qwen/Qwen3-8B
+
+  hffit Qwen/Qwen3-8B --context 32768
+
+  hffit https://huggingface.co/Qwen/Qwen3-8B --context 131072
+
+Options:
+
+  --context <tokens>
+        Context window to evaluate.
+        Default: 8192
+
+  --version
+        Show version
+`)
 }
 
-func printHardware(hw *domain.Hardware) {
+func printHardware(
+	hw *domain.Hardware,
+) {
+
 	fmt.Println("Hardware")
-	fmt.Println("──────────────────────────────────")
+	fmt.Println("────────────────────────────────────────")
 
 	fmt.Printf(
-		"OS       %s/%s\n",
+		"OS          %s/%s\n",
 		hw.OS,
 		hw.Arch,
 	)
 
 	fmt.Printf(
-		"CPU      %s\n",
+		"CPU         %s\n",
 		hw.CPU.Model,
 	)
 
 	fmt.Printf(
-		"Cores    %d\n",
+		"Cores       %d\n",
 		hw.CPU.Cores,
 	)
 
 	fmt.Printf(
-		"RAM      %.2f GB\n",
+		"RAM         %.2f GB\n",
 		hw.Memory.TotalGB(),
 	)
 
 	if len(hw.GPUs) == 0 {
-		fmt.Println("GPU      Not detected")
+
+		fmt.Println(
+			"GPU         Not detected",
+		)
 	}
 
 	for _, gpu := range hw.GPUs {
+
 		fmt.Printf(
-			"GPU      %s\n",
+			"GPU         %s\n",
 			gpu.Model,
 		)
 
 		fmt.Printf(
-			"VRAM     %.2f GB\n",
+			"VRAM        %.2f GB\n",
 			gpu.VRAMGB(),
 		)
 
 		fmt.Printf(
-			"Driver   %s\n",
+			"Driver      %s\n",
 			gpu.DriverVersion,
 		)
 	}
@@ -135,28 +255,68 @@ func printHardware(hw *domain.Hardware) {
 	fmt.Println()
 }
 
-func printModel(model *domain.Model) {
+func printModel(
+	model *domain.Model,
+	contextSize int,
+) {
+
 	fmt.Println("Model")
-	fmt.Println("──────────────────────────────────")
+	fmt.Println("────────────────────────────────────────")
 
 	fmt.Printf(
-		"ID       %s\n",
+		"ID          %s\n",
 		model.ID,
 	)
 
 	fmt.Printf(
-		"Type     %s\n",
+		"Type        %s\n",
 		model.ModelType,
 	)
 
 	fmt.Printf(
-		"Arch     %s\n",
+		"Arch        %s\n",
 		model.Architecture,
 	)
 
 	fmt.Printf(
-		"Params   %.2f B\n",
-		float64(model.Parameters)/1_000_000_000,
+		"Params      %.2f B\n",
+		float64(model.Parameters)/
+			1_000_000_000,
+	)
+
+	fmt.Printf(
+		"Layers      %d\n",
+		model.HiddenLayers,
+	)
+
+	fmt.Printf(
+		"Hidden      %d\n",
+		model.HiddenSize,
+	)
+
+	fmt.Printf(
+		"Heads       %d\n",
+		model.AttentionHeads,
+	)
+
+	fmt.Printf(
+		"KV heads    %d\n",
+		model.KeyValueHeads,
+	)
+
+	fmt.Printf(
+		"Head dim    %d\n",
+		model.HeadDim,
+	)
+
+	fmt.Printf(
+		"Max context %d\n",
+		model.MaxPositionEmbeddings,
+	)
+
+	fmt.Printf(
+		"Test context %d\n",
+		contextSize,
 	)
 
 	fmt.Println()
@@ -167,17 +327,25 @@ func printCompatibility(
 ) {
 
 	fmt.Println("Compatibility")
-	fmt.Println("──────────────────────────────────")
+	fmt.Println("──────────────────────────────────────────────────────────────────────────")
 
 	for _, result := range results {
+
 		fmt.Printf(
-			"%s %s %-6s %3d/100  %6.2f GB  %s\n",
+			"%s %-9s %-5s %3d/100  Total %6.2f GB  %s\n",
 			icon(result.Level),
 			levelName(result.Level),
 			result.Precision,
 			result.Score,
 			result.RequiredVRAMGB(),
 			result.Message,
+		)
+
+		fmt.Printf(
+			"   Weights: %6.2f GB | KV: %6.2f GB | Overhead: %5.2f GB\n",
+			result.WeightsGB(),
+			result.KVCacheGB(),
+			result.OverheadGB(),
 		)
 	}
 }
@@ -188,19 +356,21 @@ func icon(
 
 	switch level {
 
-	case domain.LevelExcellent:
-		return "🟢"
+	case domain.LevelExcellent,
+		domain.LevelGood:
 
-	case domain.LevelGood:
 		return "🟢"
 
 	case domain.LevelLimited:
+
 		return "🟡"
 
 	case domain.LevelPoor:
+
 		return "🟠"
 
 	default:
+
 		return "🔴"
 	}
 }
@@ -215,15 +385,121 @@ func levelName(
 		return "Excellent"
 
 	case domain.LevelGood:
-		return "Good     "
+		return "Good"
 
 	case domain.LevelLimited:
-		return "Limited  "
+		return "Limited"
 
 	case domain.LevelPoor:
-		return "Poor     "
+		return "Poor"
 
 	default:
-		return "No       "
+		return "No"
+	}
+}
+
+func printGGUFCompatibility(
+	model *domain.Model,
+	results []domain.GGUFVariant,
+	contextSize int,
+) {
+
+	fmt.Println()
+	fmt.Println("GGUF")
+	fmt.Println(
+		"──────────────────────────────────────────────────────────────────────────",
+	)
+
+	for _, result := range results {
+
+		recommended := ""
+
+		if result.Recommended {
+			recommended =
+				" ← RECOMMENDED"
+		}
+
+		fmt.Printf(
+			"%s %-8s %3d/100  %6.2f GB  %-35s%s\n",
+			icon(result.Level),
+			result.Quantization,
+			result.Score,
+			result.EstimatedVRAMGB(),
+			result.Message,
+			recommended,
+		)
+
+		fmt.Printf(
+			"   Weights: %.2f GB | %.2f bpw | %s\n",
+			result.EstimatedWeightsGB(),
+			result.BitsPerWeight,
+			result.Filename,
+		)
+	}
+
+	fmt.Println()
+
+	printRecommendedCommand(
+		model,
+		results,
+		contextSize,
+	)
+}
+
+func printRecommendedCommand(
+	model *domain.Model,
+	results []domain.GGUFVariant,
+	contextSize int,
+) {
+
+	for _, result := range results {
+
+		if !result.Recommended {
+			continue
+		}
+
+		fmt.Println(
+			"Recommended configuration",
+		)
+
+		fmt.Println(
+			"────────────────────────────────────────",
+		)
+
+		fmt.Printf(
+			"Quantization: %s\n",
+			result.Quantization,
+		)
+
+		fmt.Printf(
+			"Estimated VRAM: %.2f GB\n",
+			result.EstimatedVRAMGB(),
+		)
+
+		fmt.Printf(
+			"Context: %d\n\n",
+			contextSize,
+		)
+
+		fmt.Println("llama.cpp:")
+
+		fmt.Printf(
+			"llama-cli -hf %s:%s -ngl 999 -c %d\n",
+			model.ID,
+			result.Quantization,
+			contextSize,
+		)
+
+		fmt.Println()
+
+		fmt.Println("Ollama:")
+
+		fmt.Printf(
+			"ollama run hf.co/%s:%s\n",
+			model.ID,
+			result.Quantization,
+		)
+
+		return
 	}
 }
