@@ -1,7 +1,9 @@
 package domain
 
 type Model struct {
-	ID           string
+	ID          string
+	BaseModelID string
+
 	Library      string
 	PipelineTag  string
 	Parameters   uint64
