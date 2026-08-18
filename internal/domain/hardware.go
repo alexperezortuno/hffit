@@ -25,13 +25,9 @@ type GPU struct {
 }
 
 func (m Memory) TotalGB() float64 {
-	return bytesToGB(m.TotalBytes)
+	return BytesToGB(m.TotalBytes)
 }
 
 func (g GPU) VRAMGB() float64 {
-	return bytesToGB(g.VRAMBytes)
-}
-
-func bytesToGB(value uint64) float64 {
-	return float64(value) / (1024 * 1024 * 1024)
+	return BytesToGB(g.VRAMBytes)
 }
